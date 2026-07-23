@@ -23,6 +23,7 @@ export interface ExperienceStats {
   constellationsOn: boolean;
   webcamOn: boolean;
   autoCameraMode: boolean;
+  zoomProgress: number;
 }
 
 // Constellation lines — draw connectors between nearby selected particles
@@ -54,7 +55,7 @@ class ConstellationLines {
   update(positions: Float32Array, count: number): void {
     if (!this.enabled) return;
     this.frameCount++;
-    if (this.frameCount % 4 !== 0) return; // update every 4 frames
+    if (this.frameCount % 4 !== 0) return;
 
     const SAMPLE = 350;
     const step = Math.max(1, Math.floor(count / SAMPLE));
@@ -94,12 +95,12 @@ interface CameraShake {
 
 // Color palette presets (for gesture cycling)
 const COLOR_PALETTES: Array<[number,number,number][]> = [
-  [[0.0, 0.55, 1.0],  [0.5, 0.9, 1.0]],   // blue/cyan
-  [[0.8, 0.0, 1.0],   [1.0, 0.4, 0.8]],   // purple/pink
-  [[1.0, 0.5, 0.0],   [1.0, 0.95, 0.2]],  // gold/amber
-  [[0.0, 1.0, 0.5],   [0.0, 0.8, 1.0]],   // teal/green
-  [[1.0, 0.1, 0.0],   [1.0, 0.7, 0.0]],   // red/orange
-  [[0.8, 0.8, 1.0],   [1.0, 1.0, 1.0]],   // white
+  [[0.0, 0.55, 1.0],  [0.5, 0.9, 1.0]],
+  [[0.8, 0.0, 1.0],   [1.0, 0.4, 0.8]],
+  [[1.0, 0.5, 0.0],   [1.0, 0.95, 0.2]],
+  [[0.0, 1.0, 0.5],   [0.0, 0.8, 1.0]],
+  [[1.0, 0.1, 0.0],   [1.0, 0.7, 0.0]],
+  [[0.8, 0.8, 1.0],   [1.0, 1.0, 1.0]],
 ];
 let paletteIndex = 0;
 
@@ -136,7 +137,14 @@ export class Experience extends EventTarget {
   // Scale/rotation state for formation targets
   private formationScale = 1.0;
   private formationRotY = 0;
-  private targetScale = 1.0; // base formation radius
+  private targetScale = 1.0;
+
+  // Camera zoom (two-hand / pinch driven)
+  private camRadius = 55;
+  private camRadiusTarget = 55;
+  private navigating = false;
+  private navigateTimer = 0;
+  zoomProgress = 0;
 
   // Feature toggles
   private constellationsOn = false;
@@ -182,8 +190,6 @@ export class Experience extends EventTarget {
     this.loop.start();
   }
 
-  // ─── Lifecycle ───────────────────────────────────────────────────────────────
-
   dispose(): void {
     this.loop.dispose();
     this.constellation.dispose();
@@ -196,8 +202,6 @@ export class Experience extends EventTarget {
     this.renderer.resize(w, h);
     this.postProcessor?.resize(w, h);
   }
-
-  // ─── Formation ───────────────────────────────────────────────────────────────
 
   setFormationByIndex(index: number): void {
     this.formationIndex = index % FORMATION_ORDER.length;
@@ -218,19 +222,15 @@ export class Experience extends EventTarget {
     this.applyFormation(FORMATION_ORDER[this.formationIndex]);
   }
 
-// ─── External methods (called by hand controller) ────────────────────────────
-
   triggerCameraShake(intensity: number, duration: number): void {
     this.camShake = { intensity, duration, elapsed: 0 };
   }
 
   triggerSupernova(): void {
-    // Scatter particles dramatically
     this.particles.triggerScatter(0, 0, 0, 80);
     this.particles.springMult = 0.12;
     this.triggerCameraShake(1.8, 0.6);
     if (this.postProcessor) this.postProcessor.setBloomIntensity(5.0);
-    // Restore after 3 seconds
     setTimeout(() => {
       this.particles.springMult = 1.0;
       if (this.postProcessor) this.postProcessor.setBloomIntensity(this.quality.config.bloomIntensity);
@@ -278,7 +278,6 @@ export class Experience extends EventTarget {
 
   toggleWebcam(): boolean {
     this.webcamOn = !this.webcamOn;
-    // Renderer transparency handled by caller
     this.dispatchStats();
     return this.webcamOn;
   }
@@ -292,16 +291,17 @@ export class Experience extends EventTarget {
     this.formationScale = 1.0;
     this.formationRotY = 0;
     this.particles.springMult = 1.0;
+    this.camRadiusTarget = 55;
+    this.navigating = false;
+    this.navigateTimer = 0;
+    this.zoomProgress = 0;
     this.applyFormation(this.formation);
     if (this.postProcessor) this.postProcessor.setBloomIntensity(this.quality.config.bloomIntensity);
   }
 
-  // ─── Main update ──────────────────────────────────────────────────────────────
-
   private update(time: number, dt: number): void {
     const fields: ForceField[] = [];
 
-    // Process gesture forces
     if (this.gestureForces) {
       this.applyGestureForces(this.gestureForces, fields, time, dt);
     }
@@ -309,23 +309,17 @@ export class Experience extends EventTarget {
       this.applyGestureTriggers(this.gestureTriggers, time);
     }
 
-    // Keep visual formations physically attached to the tracked palm.
-    // The particle simulation stays local; only its parent point-cloud moves.
     const anchorEase = 1 - Math.exp(-dt * (this.palmAnchorActive ? 24 : 4));
     const anchorGoal = this.palmAnchorActive ? this.palmAnchorTarget : new THREE.Vector3();
     this.particles.points.position.lerp(anchorGoal, anchorEase);
-    // A full formation has a world radius around 20 units. On a real palm it
-    // must be treated as a small AR object, not rendered at its desktop size.
     const targetPalmScale = this.palmAnchorActive ? 0.15 : 1.0;
     this.palmVisualScale += (targetPalmScale - this.palmVisualScale) * (1 - Math.exp(-dt * 16));
     this.particles.points.scale.setScalar(this.palmVisualScale);
 
-    // Wave formation: live target update
     if (this.formation === 'wave') {
       updateWaveTargets(this.particles.targets, this.particles.count, time);
     }
 
-    // Both pinch compress: pull all targets toward center
     if (this.gestureForces?.bothPinchCompress.active) {
       const s = this.gestureForces.bothPinchCompress.strength;
       this.targetScale = Math.max(0.1, 1.0 - s * 0.85);
@@ -333,16 +327,14 @@ export class Experience extends EventTarget {
       this.targetScale += (1.0 - this.targetScale) * 0.05;
     }
 
-    // Apply rotation and scale to targets
     if (this.formationRotY !== 0 || this.targetScale !== 1.0) {
       this.transformTargets(this.formationRotY, this.targetScale);
-      this.formationRotY = 0; // reset delta
+      this.formationRotY = 0;
     }
 
     this.particles.update(dt, time, fields);
     this.constellation.update(this.particles.positions, this.particles.count);
 
-    // Auto-clear gesture label after 1.5s
     if (this.currentGesture !== 'none') {
       this.gestureTimer += dt;
       if (this.gestureTimer > 1.5) {
@@ -351,17 +343,14 @@ export class Experience extends EventTarget {
       }
     }
 
-    // Camera
     this.updateCamera(dt, time);
 
-    // Render
     if (this.postProcessor) {
       this.postProcessor.render(dt);
     } else {
       this.renderer.gl.render(this.renderer.scene, this.renderer.camera);
     }
 
-    // FPS
     this.fpsFrames++;
     this.fpsAccum += dt;
     if (this.fpsAccum >= 0.5) {
@@ -369,8 +358,6 @@ export class Experience extends EventTarget {
       this.fpsFrames = 0;
       this.fpsAccum = 0;
 
-      // Preserve input responsiveness if the device falls behind: bloom is the
-      // first thing to reduce because it is cosmetic and GPU-heavy.
       this.lowFpsSamples = this.fps < 42 ? this.lowFpsSamples + 1 : Math.max(0, this.lowFpsSamples - 1);
       if (this.postProcessor && this.lowFpsSamples >= 2 && !this.bloomThrottled) {
         this.postProcessor.setBloomIntensity(0.18);
@@ -392,37 +379,31 @@ export class Experience extends EventTarget {
     this.palmAnchorActive = gf.palmAnchor.active;
     if (gf.palmAnchor.active) {
       this.palmAnchorTarget.copy(this.ndcToWorld(gf.palmAnchor.nx, gf.palmAnchor.ny));
-      // An anchored formation must be visible over the user's actual palm.
       if (!this.webcamOn) this.webcamOn = true;
     }
     const localPoint = (nx: number, ny: number) => this.ndcToWorld(nx, ny).sub(this.particles.points.position);
 
-    // Open palm repulsion
     if (gf.openPalmRepel.active) {
       const wp = localPoint(gf.openPalmRepel.nx, gf.openPalmRepel.ny);
       fields.push({ ox: wp.x, oy: wp.y, oz: 0, radius: 22, strength: 0.3, mode: 'repel' });
 
-      // Palm rotation
       if (gf.palmRotation.active) {
         this.formationRotY += gf.palmRotation.deltaRotY;
       }
     }
 
-    // Black hole
     if (gf.blackHole.active) {
       const wp = localPoint(gf.blackHole.nx, gf.blackHole.ny);
       fields.push({ ox: wp.x, oy: wp.y, oz: 0, radius: 28, strength: 0.55, mode: 'spiral' });
       this.setGesture('BLACK HOLE');
     }
 
-    // Magnetic point
     if (gf.magnetPoint.active) {
       const wp = localPoint(gf.magnetPoint.nx, gf.magnetPoint.ny);
       fields.push({ ox: wp.x, oy: wp.y, oz: 0, radius: 22, strength: 0.3, mode: 'attract' });
       this.setGesture('MAGNETIC');
     }
 
-    // Pinch charge
     if (gf.pinchCharge.active) {
       this.pinchChargeLevel = gf.pinchCharge.charge;
       this.pinchWorldPos.copy(localPoint(gf.pinchCharge.nx, gf.pinchCharge.ny));
@@ -433,21 +414,25 @@ export class Experience extends EventTarget {
       this.setGesture('EXPLOSION!');
     }
 
-    // Two-hand scale
+    // Two-hand scale → zoom camera + scale formation
     if (gf.twoHandScale.active) {
-      const s = 1 + gf.twoHandScale.scaleDelta;
+      const s = 1 + gf.twoHandScale.scaleDelta * 2.5;
+      this.camRadiusTarget = Math.max(5, Math.min(90, this.camRadiusTarget / s));
       this.scaleTargets(s);
       this.formationScale *= s;
-      this.setGesture('SCALING');
+      this.setGesture(gf.twoHandScale.scaleDelta > 0 ? '⟳ ZOOM IN' : '⟳ ZOOM OUT');
     }
 
-    // Two-hand rotation
+    // Single-hand pinch zoom → camera zoom
+    if (gf.pinchZoom.active) {
+      this.camRadiusTarget = Math.max(5, Math.min(90, this.camRadiusTarget - gf.pinchZoom.delta * 40));
+    }
+
     if (gf.twoHandRotate.active) {
       this.formationRotY += gf.twoHandRotate.angleDelta;
       this.setGesture('ROTATING');
     }
 
-    // Both pinch compress
     if (gf.bothPinchCompress.active) {
       this.setGesture('COMPRESSING');
     }
@@ -468,7 +453,26 @@ export class Experience extends EventTarget {
 
   private updateCamera(dt: number, time: number): void {
     const cam = this.renderer.camera;
-    const camR = 55;
+
+    // Smoothly lerp camera radius toward target
+    this.camRadius += (this.camRadiusTarget - this.camRadius) * (1 - Math.exp(-dt * 3.5));
+
+    // Track zoom progress: 0 when far (r=28), 1 when very close (r=6)
+    const ZOOM_START = 28, ZOOM_END = 6;
+    this.zoomProgress = Math.max(0, Math.min(1, (ZOOM_START - this.camRadius) / (ZOOM_START - ZOOM_END)));
+
+    // Navigate-into trigger: hold at max zoom for 0.7s
+    if (this.zoomProgress >= 1 && !this.navigating) {
+      this.navigateTimer += dt;
+      if (this.navigateTimer >= 0.7) {
+        this.navigating = true;
+        this.dispatchEvent(new CustomEvent('navigate-into', { detail: { formation: this.formation } }));
+      }
+    } else if (this.zoomProgress < 0.9) {
+      this.navigateTimer = 0;
+    }
+
+    const camR = this.camRadius;
 
     if (this.autoCameraMode) {
       this.camAngle += dt * 0.07;
@@ -479,7 +483,6 @@ export class Experience extends EventTarget {
       cam.position.y += (ty - cam.position.y) * 0.018;
       cam.position.z += (tz - cam.position.z) * 0.018;
     } else {
-      // Open palm controls camera angles
       if (this.gestureForces?.palmRotation.active) {
         this.palmCamYaw   += this.gestureForces.palmRotation.deltaRotY * 20;
         this.palmCamPitch += this.gestureForces.palmRotation.deltaRotX * 20;
@@ -494,7 +497,6 @@ export class Experience extends EventTarget {
       cam.position.z += (tz - cam.position.z) * 0.05;
     }
 
-    // Camera shake
     if (this.camShake.elapsed < this.camShake.duration) {
       this.camShake.elapsed += dt;
       const t = 1 - this.camShake.elapsed / this.camShake.duration;
@@ -506,12 +508,9 @@ export class Experience extends EventTarget {
     cam.lookAt(0, 0, 0);
   }
 
-  // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-  // Convert normalized image coord (0-1, with x mirrored) → world space
   private ndcToWorld(nx: number, ny: number): THREE.Vector3 {
     const cam = this.renderer.camera;
-    const ndcX = (1 - nx) * 2 - 1; // mirror x
+    const ndcX = (1 - nx) * 2 - 1;
     const ndcY = -(ny * 2 - 1);
 
     const dir = new THREE.Vector3(ndcX, ndcY, 0.5)
@@ -560,6 +559,7 @@ export class Experience extends EventTarget {
         constellationsOn: this.constellationsOn,
         webcamOn: this.webcamOn,
         autoCameraMode: this.autoCameraMode,
+        zoomProgress: this.zoomProgress,
       },
     }));
   }

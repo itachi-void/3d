@@ -27,7 +27,6 @@ export function FingerThreadsPage() {
 
   const point = (hand: "left" | "right", index: number) => {
     const landmark = handCtx[hand].landmarks[index];
-    // The video is mirrored for natural interaction, so landmarks mirror too.
     return landmark ? { x: (1 - landmark.x) * 100, y: landmark.y * 100 } : { x: 50, y: 50 };
   };
 

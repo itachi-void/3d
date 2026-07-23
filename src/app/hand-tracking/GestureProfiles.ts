@@ -11,8 +11,6 @@ export interface GestureProfile {
   items: GestureGuideItem[];
 }
 
-// Each surface gets a small, intentional vocabulary. This prevents a visual
-// exploration page from accidentally behaving like a particle spell-caster.
 export const GESTURE_PROFILES: Record<string, GestureProfile> = {
   "/": {
     title: "Navigate", titleAr: "تصفح", items: [
@@ -25,7 +23,8 @@ export const GESTURE_PROFILES: Record<string, GestureProfile> = {
       { gesture: "🤏 قرص", action: "شحن ثم انفجار" },
       { gesture: "✊ قبضة", action: "ثقب أسود" },
       { gesture: "✌ سلام", action: "وضع الكاميرا التلقائي" },
-      { gesture: "🙌 يدان", action: "تكبير وتصغير وتدوير" },
+      { gesture: "↔ ابعد يديك", action: "تكبير والدخول للعنصر" },
+      { gesture: "🙌 يدان قريبتان", action: "تصغير والخروج" },
     ],
   },
   "/universe": {
@@ -113,6 +112,5 @@ export function gesturesForPath(path: string, source: GestureForces, triggerSour
   } else if (path === "/" || path === "/docs") {
     copy("pinchZoom");
   }
-  // Finger Threads is deliberately read-only: moving hands must only draw lines.
   return { forces, triggers };
 }

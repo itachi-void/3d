@@ -19,7 +19,7 @@ import type { QualityLevel } from '../engine/QualityManager';
 const INITIAL_STATS: ExperienceStats = {
   fps: 60, particleCount: 0, quality: 'high', formation: 'sphere',
   formationIndex: 0, gesture: 'none', constellationsOn: false,
-  webcamOn: false, autoCameraMode: true,
+  webcamOn: false, autoCameraMode: true, zoomProgress: 0,
 };
 
 export function Root() {
@@ -52,18 +52,14 @@ export function Root() {
 
   const location = useLocation();
 
-  // Keep path ref fresh for stale-closure-safe use inside gesture callback
   useEffect(() => {
     pathRef.current = location.pathname;
-    // Reset page zoom when navigating
     pageZoomRef.current = 1;
     if (pageZoomDivRef.current) pageZoomDivRef.current.style.transform = 'scale(1)';
   }, [location.pathname]);
 
-  // Dispose tracker on unmount
   useEffect(() => () => { trackerRef.current?.dispose(); }, []);
 
-  // ── Start hand tracking ──────────────────────────────────────────────────────
   const startHandTracking = useCallback(async () => {
     if (trackerRef.current) return;
     setCameraState('loading');
@@ -76,18 +72,15 @@ export function Root() {
       const p = pathRef.current;
       const { forces, triggers } = gesturesForPath(p, controllerRef.current.forces, controllerRef.current.triggers);
 
-      // Route only the gestures that make sense for the active surface.
       universeRef.current?.applyGestures(forces, triggers);
       worldsRef.current?.applyGestures(forces, triggers);
       magicRef.current?.applyGestures(forces, triggers);
 
-      // Page pinch-zoom (home / docs only)
       if (forces.pinchZoom.active && (p === '/' || p === '/docs') && pageZoomDivRef.current) {
         pageZoomRef.current = Math.max(0.4, Math.min(3, pageZoomRef.current + forces.pinchZoom.delta * 0.6));
         pageZoomDivRef.current.style.transform = `scale(${pageZoomRef.current})`;
       }
 
-      // Particle experience
       const exp = experienceRef.current;
       if (exp) {
         exp.gestureForces = forces;
@@ -138,7 +131,6 @@ export function Root() {
     }}>
       <div style={{ width: '100vw', height: '100vh', background: '#000005', overflow: 'hidden', position: 'relative' }}>
 
-        {/* Zoom wrapper for home + docs (pinch gesture) */}
         {isHomeLike ? (
           <div
             ref={pageZoomDivRef}
@@ -152,7 +144,6 @@ export function Root() {
 
         <GestureGuide path={location.pathname} />
 
-        {/* Global camera PiP — visible in all modes */}
         <CameraPreview
           stream={previewStream}
           handCtx={handCtx}
@@ -160,7 +151,6 @@ export function Root() {
           visible={cameraState === 'active' && location.pathname !== '/magic' && location.pathname !== '/magic-lab' && location.pathname !== '/finger-threads'}
         />
 
-        {/* Unified camera control on home / docs */}
         {isHomeLike && cameraState !== 'active' && (
           <button
             onClick={startHandTracking}
@@ -184,7 +174,6 @@ export function Root() {
           </button>
         )}
 
-        {/* Camera error toast (any page) */}
         {cameraState === 'error' && cameraError && (
           <div
             role="alert"
@@ -201,7 +190,6 @@ export function Root() {
           </div>
         )}
 
-        {/* First-visit onboarding (home only) */}
         {showOnboarding && location.pathname === '/' && (
           <Onboarding
             cameraState={cameraState}

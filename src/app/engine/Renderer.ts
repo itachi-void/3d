@@ -23,6 +23,7 @@ export class Renderer {
     this.gl.setPixelRatio(pixelRatio);
     this.gl.setSize(canvas.clientWidth, canvas.clientHeight, false);
     this.gl.setClearColor(0x000005, 1);
+    this.warnIfIntegratedGPU();
     this.gl.toneMapping = THREE.ACESFilmicToneMapping;
     this.gl.toneMappingExposure = 0.92;
 
@@ -91,6 +92,38 @@ export class Renderer {
     this.camera.aspect = width / Math.max(height, 1);
     this.camera.updateProjectionMatrix();
     this.gl.setSize(width, height, false);
+  }
+
+  /** Returns the active GPU renderer string (e.g. "NVIDIA Quadro M2000M") */
+  getGPUInfo(): { vendor: string; renderer: string } {
+    const ctx = this.gl.getContext();
+    const ext = ctx.getExtension('WEBGL_debug_renderer_info');
+    if (!ext) return { vendor: 'unknown', renderer: 'unknown' };
+    return {
+      vendor:   ctx.getParameter(ext.UNMASKED_VENDOR_WEBGL)   as string,
+      renderer: ctx.getParameter(ext.UNMASKED_RENDERER_WEBGL) as string,
+    };
+  }
+
+  private warnIfIntegratedGPU(): void {
+    const { vendor, renderer } = this.getGPUInfo();
+    const isIntegrated = /intel|HD Graphics|UHD Graphics/i.test(renderer);
+    if (isIntegrated) {
+      console.warn(
+        `%c⚠ GPU Warning`,
+        'color:#f90;font-weight:bold;font-size:14px',
+        `\nActive GPU: ${renderer} (${vendor})` +
+        `\nThis is an integrated GPU. For best performance:` +
+        `\n→ NVIDIA Control Panel → Manage 3D Settings → Program Settings` +
+        `\n→ Add msedge.exe / chrome.exe → "High-performance NVIDIA processor"`,
+      );
+    } else {
+      console.info(
+        `%c✓ GPU OK`,
+        'color:#4f4;font-weight:bold',
+        `\nActive GPU: ${renderer} (${vendor})`,
+      );
+    }
   }
 
   dispose(): void {
